@@ -1,6 +1,7 @@
 //! The Cairo language works natively for field elements in the finite field with
 //! modulus 0x800000000000011000000000000000000000000000000000000000000000001
 //! This is the hexadecimal value for 2 ^ 251 + 17 * 2 ^ 192 + 1
+//! https://github.com/starkware-libs/cairo-lang/blob/cf8266fd5d1ff66962579ff7967ac5cdcf699f77/src/starkware/crypto/starkware/crypto/signature/nothing_up_my_sleeve_gen.py#L35
 //! Our Pallas curves have 255 bits, so Cairo native instructions will fit.
 //! This means that our Cairo implementation can admit a larger domain for immediate values than theirs.
 
