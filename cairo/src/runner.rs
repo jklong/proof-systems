@@ -24,42 +24,6 @@ impl<F: Field> CairoState<F> {
     }
 }
 
-/// A structure to store auxiliary variables throughout computation
-pub struct CairoContext<F> {
-    /// Destination
-    dst: Option<F>,
-    /// First operand
-    op0: Option<F>,
-    /// Second operand
-    op1: Option<F>,
-    /// Result
-    res: Option<F>,
-    /// Destination address
-    dst_addr: F,
-    /// First operand address
-    op0_addr: F,
-    /// Second operand address
-    op1_addr: F,
-    /// Size of the instruction
-    size: F,
-}
-
-impl<F: Field> Default for CairoContext<F> {
-    /// This function creates an instance of a default [CairoContext] struct
-    fn default() -> Self {
-        Self {
-            dst: None,
-            op0: None,
-            op1: None,
-            res: None,
-            dst_addr: F::zero(),
-            op0_addr: F::zero(),
-            op1_addr: F::zero(),
-            size: F::zero(),
-        }
-    }
-}
-
 /// A data structure to store a current step of Cairo computation
 pub struct CairoStep<'a, F> {
     /// current word of the program
@@ -69,8 +33,6 @@ pub struct CairoStep<'a, F> {
     curr: CairoState<F>,
     /// (if any) next pointers
     next: Option<CairoState<F>>,
-    /// state auxiliary variables
-    vars: CairoContext<F>,
 }
 
 impl<'a, F: Field> CairoStep<'a, F> {
@@ -80,20 +42,24 @@ impl<'a, F: Field> CairoStep<'a, F> {
             mem,
             curr: ptrs,
             next: None,
-            vars: CairoContext::default(),
         }
+    }
+
+    /// This function returns the current word instruction being executed
+    fn instr(&mut self) -> CairoWord<F> {
+        CairoWord::new(self.mem.read(self.curr.pc).expect("pc points to None cell"))
     }
 
     /// Executes a Cairo step from the current registers
     pub fn execute(&mut self) {
         // This order is important in order to allocate the memory in time
-        self.set_op0();
-        self.set_op1();
-        self.set_res();
-        self.set_dst();
+        let op0 = self.set_op0();
+        let (op1_addr, op1, size) = self.set_op1(op0);
+        let res = self.set_res(op0, op1);
+        let (dst_addr, dst) = self.set_dst();
         // If the Option<> is not a guarantee for continuation of the program, we may be removing this
-        let next_pc = self.next_pc();
-        let (next_ap, next_fp) = self.next_apfp();
+        let next_pc = self.next_pc(size, res, dst, op1);
+        let (next_ap, next_fp) = self.next_apfp(size, res, dst, dst_addr, op1_addr);
         self.next = Some(CairoState::new(
             next_pc.expect("Empty next program counter"),
             next_ap.expect("Empty next allocation pointer"),
@@ -101,42 +67,44 @@ impl<'a, F: Field> CairoStep<'a, F> {
         ));
     }
 
-    /// This function returns the current word instruction being executed
-    pub fn instr(&mut self) -> CairoWord<F> {
-        CairoWord::new(self.mem.read(self.curr.pc).expect("pc points to None cell"))
-    }
-
-    /// This function computes the first operand address
-    pub fn set_op0(&mut self) {
+    /// This function computes the first operand address.
+    /// Outputs: `op0`
+    fn set_op0(&mut self) -> Option<F> {
         let reg = match self.instr().op0_reg() {
             /*0*/ OP0_AP => self.curr.ap, // reads first word from allocated memory
             /*1*/ _ => self.curr.fp, // reads first word from input stack
         }; // no more values than 0 and 1 because op0_reg is one bit
-        self.vars.op0_addr = reg + self.instr().off_op0();
-        self.vars.op0 = self.mem.read(self.vars.op0_addr);
+        let op0_addr = reg + self.instr().off_op0();
+        let op0 = self.mem.read(op0_addr);
+        op0
     }
 
     /// This function computes the second operand address and content and the instruction size
     /// Panics if the flagset `OP1_SRC` has more than 1 nonzero bit
-    pub fn set_op1(&mut self) {
+    /// Inputs: `op0`
+    /// Outputs: `(op1_addr, op1, size)`
+    fn set_op1(&mut self, op0: Option<F>) -> (F, Option<F>, F) {
         let (reg, size) = match self.instr().op1_src() {
             /*0*/
-            OP1_DBL => (self.vars.op0.expect("None op0 for OP1_DBL"), F::one()), // double indexing, op0 should be positive for address
+            OP1_DBL => (op0.expect("None op0 for OP1_DBL"), F::one()), // double indexing, op0 should be positive for address
             /*1*/
             OP1_VAL => (self.curr.pc, F::from(2u32)), // off_op1 will be 1 and then op1 contains an immediate value
             /*2*/ OP1_FP => (self.curr.fp, F::one()),
             /*4*/ OP1_AP => (self.curr.ap, F::one()),
             _ => panic!("Invalid op1_src flagset"),
         };
-        self.vars.size = size;
-        self.vars.op1_addr = reg + self.instr().off_op1(); // apply second offset to corresponding register
-        self.vars.op1 = self.mem.read(self.vars.op1_addr);
+        let op1_addr = reg + self.instr().off_op1(); // apply second offset to corresponding register
+        let op1 = self.mem.read(op1_addr);
+        (op1_addr, op1, size)
     }
 
     /// This function computes the value of the result of the arithmetic operation
     /// Panics if a `jnz` instruction is used with an invalid format
     ///     or if the flagset `RES_LOG` has more than 1 nonzero bit
-    pub fn set_res(&mut self) {
+    /// Inputs: `op0`, `op1`
+    /// Outputs: `res`
+    fn set_res(&mut self, op0: Option<F>, op1: Option<F>) -> Option<F> {
+        let res;
         if self.instr().pc_up() == PC_JNZ {
             /*4*/
             // jnz instruction
@@ -145,7 +113,7 @@ impl<'a, F: Field> CairoStep<'a, F> {
                 && self.instr().ap_up() != AP_ADD
             /* not 1*/
             {
-                self.vars.res = Some(F::zero()); // "unused"
+                res = Some(F::zero()); // "unused"
             } else {
                 panic!("Invalid JNZ instruction");
             }
@@ -156,59 +124,60 @@ impl<'a, F: Field> CairoStep<'a, F> {
         {
             // rest of types of updates
             // common increase || absolute jump || relative jump
-            match self.instr().res_log() {
-                /*0*/
-                RES_ONE => self.vars.res = self.vars.op1, // right part is single operand
-                /*1*/
-                RES_ADD => {
-                    self.vars.res = Some(
-                        self.vars.op0.expect("None op0 after RES_ADD")
-                            + self.vars.op1.expect("None op1 after RES_ADD"),
-                    )
-                } // right part is addition
-                /*2*/
-                RES_MUL => {
-                    self.vars.res = Some(
-                        self.vars.op0.expect("None op0 after RES_MUL")
-                            * self.vars.op1.expect("None op1 after RES_MUL"),
-                    )
-                } // right part is multiplication
-                _ => panic!("Invalid res_log flagset"),
-            }
+            res = {
+                match self.instr().res_log() {
+                    /*0*/
+                    RES_ONE => op1, // right part is single operand
+                    /*1*/
+                    RES_ADD => Some(
+                        op0.expect("None op0 after RES_ADD") + op1.expect("None op1 after RES_ADD"),
+                    ), // right part is addition
+                    /*2*/
+                    RES_MUL => Some(
+                        op0.expect("None op0 after RES_MUL") * op1.expect("None op1 after RES_MUL"),
+                    ), // right part is multiplication
+                    _ => panic!("Invalid res_log flagset"),
+                }
+            };
         } else {
             // multiple bits take value 1
             panic!("Invalid pc_up flagset");
         }
+        res
     }
 
     /// This function computes the destination address
-    pub fn set_dst(&mut self) {
+    /// Outputs: `(dst_addr, dst)`
+    fn set_dst(&mut self) -> (F, Option<F>) {
         let reg = match self.instr().dst_reg() {
             /*0*/ DST_AP => self.curr.ap, // read from stack
             /*1*/ _ => self.curr.fp, // read from parameters
         }; // no more values than 0 and 1 because op0_reg is one bit
-        self.vars.dst_addr = reg + self.instr().off_dst();
-        self.vars.dst = self.mem.read(self.vars.dst_addr);
+        let dst_addr = reg + self.instr().off_dst();
+        let dst = self.mem.read(dst_addr);
+        (dst_addr, dst)
     }
 
     /// This function computes the next program counter
     /// Panics if the flagset `PC_UP` has more than 1 nonzero bit
-    pub fn next_pc(&mut self) -> Option<F> {
+    /// Inputs: `size`, `res`, `dst`, `op1`,
+    /// Outputs: `next_pc`
+    fn next_pc(&mut self, size: F, res: Option<F>, dst: Option<F>, op1: Option<F>) -> Option<F> {
         match self.instr().pc_up() {
             /*0*/
-            PC_SIZ => Some(self.curr.pc + self.vars.size), // common case, next instruction is right after the current one
+            PC_SIZ => Some(self.curr.pc + size), // common case, next instruction is right after the current one
             /*1*/
-            PC_ABS => Some(self.vars.res.expect("None res after PC_ABS")), // absolute jump, next instruction is in res,
+            PC_ABS => Some(res.expect("None res after PC_ABS")), // absolute jump, next instruction is in res,
             /*2*/
-            PC_REL => Some(self.curr.pc + self.vars.res.expect("None res after PC_REL")), // relative jump, go to some address relative to pc
+            PC_REL => Some(self.curr.pc + res.expect("None res after PC_REL")), // relative jump, go to some address relative to pc
             /*4*/
             PC_JNZ => {
                 // conditional relative jump (jnz)
-                if self.vars.dst == Some(F::zero()) {
-                    Some(self.curr.pc + self.vars.size) // if condition false, common case
+                if dst == Some(F::zero()) {
+                    Some(self.curr.pc + size) // if condition false, common case
                 } else {
                     // if condition true, relative jump with second operand
-                    Some(self.curr.pc + self.vars.op1.expect("None op1 after PC_JNZ"))
+                    Some(self.curr.pc + op1.expect("None op1 after PC_JNZ"))
                 }
             }
             _ => panic!("Invalid pc_up flagset"),
@@ -219,16 +188,24 @@ impl<'a, F: Field> CairoStep<'a, F> {
     /// Panics if in a `call` instruction the flagset [AP_UP] is incorrect
     ///     or if in any other instruction the flagset AP_UP has more than 1 nonzero bit
     ///     or if the flagset `OPCODE` has more than 1 nonzero bit
-    fn next_apfp(&mut self) -> (Option<F>, Option<F>) {
+    /// Inputs: `size`, `res`, `dst`, `dst_addr`, `op1_addr`
+    /// Outputs: `(next_ap, next_fp)`
+    fn next_apfp(
+        &mut self,
+        size: F,
+        res: Option<F>,
+        dst: Option<F>,
+        dst_addr: F,
+        op1_addr: F,
+    ) -> (Option<F>, Option<F>) {
         let (next_ap, next_fp);
         // The following branches don't include the assertions. That is done in the verification.
         if self.instr().opcode() == OPC_CALL {
             /*1*/
             // "call" instruction
             self.mem.write(self.curr.ap, self.curr.fp); // Save current fp
-            self.mem
-                .write(self.curr.ap + F::one(), self.curr.pc + self.vars.size); // Save next instruction
-                                                                                // Update fp
+            self.mem.write(self.curr.ap + F::one(), self.curr.pc + size); // Save next instruction
+                                                                          // Update fp
             next_fp = Some(self.curr.ap + F::from(2u32)); // pointer for next frame is after current fp and instruction after call
                                                           // Update ap
             match self.instr().ap_up() {
@@ -248,7 +225,7 @@ impl<'a, F: Field> CairoStep<'a, F> {
                 /*1*/
                 AP_ADD => {
                     // ap += <op> should be larger than current ap
-                    next_ap = Some(self.curr.ap + self.vars.res.expect("None res after AP_ADD"))
+                    next_ap = Some(self.curr.ap + res.expect("None res after AP_ADD"))
                 }
                 /*2*/ AP_ONE => next_ap = Some(self.curr.ap + F::one()), // ap++
                 _ => panic!("Invalid ap_up flagset"),
@@ -258,7 +235,7 @@ impl<'a, F: Field> CairoStep<'a, F> {
                 /*0*/
                 OPC_JMP_INC => next_fp = Some(self.curr.fp), // no modification on fp
                 /*2*/
-                OPC_RET => next_fp = Some(self.vars.dst.expect("None dst after OPC_RET")), // ret sets fp to previous fp that was in [ap-2]
+                OPC_RET => next_fp = Some(dst.expect("None dst after OPC_RET")), // ret sets fp to previous fp that was in [ap-2]
                 /*4*/
                 OPC_AEQ => {
                     // The following conditional is a fix that is not explained in the whitepaper
@@ -266,16 +243,14 @@ impl<'a, F: Field> CairoStep<'a, F> {
                     // dst = res , but in order for this to be true, one sometimes needs to write
                     // the res in mem(dst_addr) and sometimes write dst in mem(res_dir). The only
                     // case where res can be None is when res = op1 and thus res_dir = op1_addr
-                    if self.vars.res.is_none() {
-                        self.mem.write(
-                            self.vars.op1_addr,
-                            self.vars.dst.expect("None dst after OPC_AEQ"),
-                        ); // res = dst
+                    if res.is_none() {
+                        self.mem
+                            .write(op1_addr, dst.expect("None dst after OPC_AEQ"));
+                    // res = dst
                     } else {
-                        self.mem.write(
-                            self.vars.dst_addr,
-                            self.vars.res.expect("None res after OPC_AEQ"),
-                        ); // dst = res
+                        self.mem
+                            .write(dst_addr, res.expect("None res after OPC_AEQ"));
+                        // dst = res
                     }
                     next_fp = Some(self.curr.fp); // no modification on fp
                 }
