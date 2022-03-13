@@ -32,11 +32,6 @@ jobs:
         run: |
           sudo apt update
           sudo apt install -y ocaml
-      
-      - name: Setup miri
-        run: |
-          rustup toolchain install nightly --component miri
-          cargo +nightly miri setup
 
       # `cargo check` compiles the packages without performing the final step of code generation,
       # which is faster than running `cargo build`.
@@ -65,6 +60,31 @@ jobs:
           cd poly-commitment && make build && cd ..
           git diff --exit-code
 
-      # Run static analysis tools
+  static_analysis:
+    runs-on: ubuntu-latest
+    name: Run static analysis tools
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v2
+
+      - name: Set up cargo/rust
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: nightly
+          components: miri
+          override: true
+
+      - name: Setup OCaml (because of ocaml-gen)
+        run: |
+          sudo apt update
+          sudo apt install -y ocaml
+      
+      - name: Setup miri
+        run: |
+          rustup toolchain install nightly --component miri
+          cargo miri setup
+      
       - name: Run tests with miri
-        run: cargo clean && cargo +nightly miri test --release --all-features
+        run: cargo clean && cargo miri test --release --all-features
+      
