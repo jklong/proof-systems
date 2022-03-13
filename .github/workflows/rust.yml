@@ -80,9 +80,21 @@ jobs:
           sudo apt update
           sudo apt install -y ocaml
       
-      - name: Setup miri
+      - name: Set up miri
         run: cargo miri setup
       
       - name: Run tests with miri
         run: cargo clean && cargo miri test --release --all-features
+
+      - name: Set up prusti
+        if: always()
+        run: |
+          curl -sSL https://github.com/viperproject/prusti-dev/releases/download/v-2021-11-22-1738/prusti-release-ubuntu.zip \
+            -o prusti.zip
+          unzip prusti.zip -d prusti
+          chmod +x prusti/cargo-prusti
+      
+      - name: Run cargo-prusti check
+        if: always()
+        run: prusti/cargo-prusti check
       
