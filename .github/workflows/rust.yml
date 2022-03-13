@@ -94,7 +94,7 @@ jobs:
           unzip prusti.zip -d prusti
           chmod +x prusti/cargo-prusti
       
-      - name: Run cargo-prusti check
+      - name: Run cargo-prusti
         if: always()
-        run: prusti/cargo-prusti check
+        run: prusti/cargo-prusti
       
