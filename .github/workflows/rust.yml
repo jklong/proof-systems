@@ -32,6 +32,11 @@ jobs:
         run: |
           sudo apt update
           sudo apt install -y ocaml
+      
+      - name: Setup miri
+        run: |
+          rustup toolchain install nightly --component miri
+          cargo +nightly miri setup
 
       # `cargo check` compiles the packages without performing the final step of code generation,
       # which is faster than running `cargo build`.
@@ -59,3 +64,7 @@ jobs:
           cd kimchi && make build && cd ..
           cd poly-commitment && make build && cd ..
           git diff --exit-code
+
+      # Run static analysis tools
+      - name: Run tests with miri
+        run: cargo clean && cargo +nightly miri test --release --all-features
