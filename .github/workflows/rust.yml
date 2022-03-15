@@ -92,6 +92,7 @@ jobs:
           curl -sSL https://github.com/viperproject/prusti-dev/releases/download/v-2021-11-22-1738/prusti-release-ubuntu.zip \
             -o prusti.zip
           unzip prusti.zip -d prusti
+          chmod +x prusti/prusti-rustc
           chmod +x prusti/cargo-prusti
       
       - name: Run cargo-prusti
