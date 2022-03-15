@@ -59,3 +59,43 @@ jobs:
           cd kimchi && make build && cd ..
           cd poly-commitment && make build && cd ..
           git diff --exit-code
+
+  static_analysis:
+    runs-on: ubuntu-latest
+    name: Run static analysis tools
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v2
+
+      - name: Set up cargo/rust
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: nightly
+          components: miri, rust-src
+          override: true
+
+      - name: Setup OCaml (because of ocaml-gen)
+        run: |
+          sudo apt update
+          sudo apt install -y ocaml
+      
+      - name: Set up miri
+        run: cargo miri setup
+      
+      - name: Run tests with miri
+        run: cargo clean && cargo miri test --release --all-features
+
+      - name: Set up prusti
+        if: always()
+        run: |
+          curl -sSL https://github.com/viperproject/prusti-dev/releases/download/v-2021-11-22-1738/prusti-release-ubuntu.zip \
+            -o prusti.zip
+          unzip prusti.zip -d prusti
+          chmod +x prusti/prusti-rustc
+          chmod +x prusti/cargo-prusti
+      
+      - name: Run cargo-prusti
+        if: always()
+        run: prusti/cargo-prusti
+      
